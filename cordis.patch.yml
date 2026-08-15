@@ -1,0 +1,4 @@
+# DSH Observatory bundle：Host 端采集事件，Client 端由 dsh.client 清单自动加载。
+- insert:
+    - id: observatory
+      name: 'dsh-observatory'
