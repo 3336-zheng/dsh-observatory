@@ -2,15 +2,21 @@ import { useEffect, useMemo, useState, type ComponentType, type SVGProps } from 
 import {
   Activity,
   AlertTriangle,
+  Bot,
   Braces,
   ChevronRight,
   CircleDot,
   Clock3,
   Download,
+  FileText,
   Gauge,
   Layers3,
+  RefreshCw,
+  Save,
   Search,
+  Server,
   ShieldCheck,
+  Sparkles,
   Wrench,
   X,
 } from 'lucide-react'
@@ -18,18 +24,21 @@ import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type { ObservatorySnapshot, RuntimeNode, TimelineEvent } from '../model.ts'
 import { redactValue } from '../redaction.ts'
+import type { ConfigFile, ConfigKind, ConfigReadValue } from '../config-types.ts'
+import { ConfigSource } from './config-source.ts'
 import { deriveClientSnapshot } from './normalize.ts'
 import type { CurrentSessionValue } from './sources.ts'
 import css from './observatory.module.css'
 
 type Icon = ComponentType<SVGProps<SVGSVGElement> & { size?: string | number; strokeWidth?: string | number }>
-type View = 'overview' | 'trace' | 'context'
+type View = 'overview' | 'trace' | 'context' | ConfigKind
 
 export interface ObservatoryPanelFace {
   hooks: {
     observatory: { getSnapshot(): CurrentSessionValue; subscribe(listener: () => void): () => void }
     runtime: { getSnapshot(): readonly RuntimeNode[]; subscribe(listener: () => void): () => void }
   }
+  config: ConfigSource
 }
 
 export type ObservatoryPanelProps =
@@ -86,21 +95,175 @@ function MetricStrip({ snapshot }: { snapshot: ObservatorySnapshot }) {
   )
 }
 
+function runtimeRole(kind: RuntimeNode['kind']): string {
+  return {
+    profile: '工作环境',
+    bundle: '功能集合',
+    plugin: '能力模块',
+    service: '后台服务',
+    slot: '挂载位置',
+  }[kind]
+}
+
+function runtimeName(node: RuntimeNode): string {
+  const labels: Record<string, string> = {
+    web: 'Web 工作区',
+    root: '主运行区',
+    sidebar: '侧边栏',
+    'sidebar.footer.action': '侧边栏操作区',
+    layout: '界面布局',
+    'agent-loop': 'Agent 执行',
+    tools: '工具能力',
+    sessions: '会话管理',
+    'dsh-observatory': 'Observatory 观测',
+  }
+  return labels[node.name] ?? node.name
+}
+
+function runtimeSize(node: RuntimeNode): number {
+  return 1 + (node.children?.reduce((sum, child) => sum + runtimeSize(child), 0) ?? 0)
+}
+
+function runtimeStatus(status: RuntimeNode['status']): string {
+  return { active: '已启用', waiting: '等待中', failed: '异常' }[status]
+}
+
 function RuntimeBranch({ node, depth = 0 }: { node: RuntimeNode; depth?: number }) {
   const childCount = node.children?.length ?? 0
+  const descendantCount = runtimeSize(node) - 1
   return (
     <li>
-      <div className={css.runtimeRow} style={{ paddingLeft: 10 + depth * 18 }}>
-        {childCount > 0 ? <ChevronRight size={13} /> : <span className={css.runtimeSpacer} />}
-        <span className={css.runtimeKind}>{node.kind}</span>
-        <span className={css.runtimeName}>{node.name}</span>
-        {node.provider !== undefined && <span className={css.runtimeProvider}>{node.provider}</span>}
-        <span className={css.runtimeState} data-status={node.status}>{node.status}</span>
-      </div>
-      {node.children !== undefined && (
-        <ul>{node.children.map(child => <RuntimeBranch key={child.id} node={child} depth={depth + 1} />)}</ul>
-      )}
+      <details className={css.runtimeItem}>
+        <summary className={css.runtimeRow} style={{ paddingLeft: 10 + depth * 18 }}>
+          <ChevronRight size={13} />
+          <span className={css.runtimeCopy}>
+            <strong>{runtimeName(node)}</strong>
+            <small>{runtimeRole(node.kind)}{descendantCount > 0 ? ` · ${String(descendantCount)} 项` : ''}</small>
+          </span>
+          <span className={css.runtimeState} data-status={node.status}>{runtimeStatus(node.status)}</span>
+        </summary>
+        {node.provider !== undefined && (
+          <div className={css.runtimeDetail}>来源：<code>{node.provider}</code></div>
+        )}
+        {childCount > 0 && (
+          <ul>{node.children?.map(child => <RuntimeBranch key={child.id} node={child} depth={depth + 1} />)}</ul>
+        )}
+      </details>
     </li>
+  )
+}
+
+const CONFIG_PAGE: Record<ConfigKind, { title: string; eyebrow: string; description: string }> = {
+  skills: { title: 'Skills', eyebrow: 'SKILLS', description: '可复用的工作方法和指令' },
+  mcp: { title: 'MCP 服务', eyebrow: 'MCP', description: '外部工具服务的本地配置' },
+  agents: { title: 'Sub-agent', eyebrow: 'SUB-AGENT', description: '子 Agent 的预设与行为配置' },
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1_024) return `${String(bytes)} B`
+  if (bytes < 1_024 * 1_024) return `${(bytes / 1_024).toFixed(1)} KB`
+  return `${(bytes / (1_024 * 1_024)).toFixed(1)} MB`
+}
+
+function ConfigManager({ config, kind }: { config: ConfigSource; kind: ConfigKind }) {
+  const page = CONFIG_PAGE[kind]
+  const [files, setFiles] = useState<readonly ConfigFile[]>([])
+  const [root, setRoot] = useState('')
+  const [selectedId, setSelectedId] = useState<string>()
+  const [document, setDocument] = useState<ConfigReadValue>()
+  const [draft, setDraft] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [reading, setReading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [refresh, setRefresh] = useState(0)
+  const [notice, setNotice] = useState<string>()
+  const [error, setError] = useState<string>()
+
+  useEffect(() => {
+    let active = true
+    setLoading(true)
+    setError(undefined)
+    void config.list(kind).then(value => {
+      if (!active) return
+      setRoot(value.root)
+      setFiles(value.files)
+      setSelectedId(current => current !== undefined && value.files.some(file => file.id === current)
+        ? current : value.files[0]?.id)
+    }).catch(reason => {
+      if (active) setError(reason instanceof Error ? reason.message : '读取配置目录失败')
+    }).finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [config, kind, refresh])
+
+  useEffect(() => {
+    if (selectedId === undefined) {
+      setDocument(undefined)
+      setDraft('')
+      return
+    }
+    let active = true
+    setReading(true)
+    setNotice(undefined)
+    setError(undefined)
+    void config.read(kind, selectedId).then(value => {
+      if (!active) return
+      setDocument(value)
+      setDraft(value.content)
+    }).catch(reason => {
+      if (active) setError(reason instanceof Error ? reason.message : '读取配置文件失败')
+    }).finally(() => { if (active) setReading(false) })
+    return () => { active = false }
+  }, [config, kind, selectedId])
+
+  const dirty = document !== undefined && draft !== document.content
+  const save = () => {
+    if (selectedId === undefined || document === undefined || saving) return
+    setSaving(true)
+    setNotice(undefined)
+    setError(undefined)
+    void config.write(kind, selectedId, draft, document.file.modifiedAt).then(value => {
+      setDocument(current => current === undefined ? current : { ...current, file: value.file })
+      setFiles(current => current.map(file => file.id === value.file.id ? value.file : file))
+      setNotice('已保存到本地 .dsh')
+    }).catch(reason => {
+      setError(reason instanceof Error ? reason.message : '保存失败')
+    }).finally(() => { setSaving(false) })
+  }
+
+  return (
+    <section className={`${css.band} ${css.configPage}`}>
+      <div className={css.configHeader}>
+        <div><span className={css.eyebrow}>{page.eyebrow}</span><h2>{page.title}</h2><p>{page.description}</p></div>
+        <div className={css.configActions}>
+          <span className={css.configRoot}>{root || '.dsh'}</span>
+          <button type="button" className={css.iconButton} aria-label="刷新文件列表" title="刷新文件列表" onClick={() => { setRefresh(value => value + 1) }}><RefreshCw size={15} /></button>
+          <button type="button" className={css.saveButton} disabled={!dirty || saving || reading} onClick={save}><Save size={14} />{saving ? '保存中' : '保存修改'}</button>
+        </div>
+      </div>
+      {error !== undefined && <div className={css.configNotice} data-tone="error">{error}</div>}
+      {notice !== undefined && <div className={css.configNotice} data-tone="success">{notice}</div>}
+      <div className={css.configLayout}>
+        <div className={css.configFiles}>
+          <div className={css.configFilesHead}><span>文件</span><span>{files.length}</span></div>
+          {loading && <div className={css.configEmpty}>正在读取…</div>}
+          {!loading && files.length === 0 && <div className={css.configEmpty}>目录中暂无文件</div>}
+          {files.map(file => (
+            <button type="button" key={file.id} className={file.id === selectedId ? `${css.configFile} ${css.configFileActive}` : css.configFile} onClick={() => { setSelectedId(file.id) }}>
+              <FileText size={14} />
+              <span><strong>{file.relativePath.split('/').at(-1)}</strong><small>{formatBytes(file.bytes)} · {file.format}</small></span>
+            </button>
+          ))}
+        </div>
+        <div className={css.configEditor}>
+          {selectedId === undefined
+            ? <div className={css.configEmpty}><FileText size={20} /><span>选择一个文件开始查看</span></div>
+            : <>
+              <div className={css.configEditorHead}><strong>{selectedId}</strong>{document?.redacted === true && <span>已隐藏敏感值</span>}</div>
+              <textarea value={draft} disabled={reading || saving} onChange={event => { setDraft(event.target.value) }} spellCheck={false} aria-label={`${page.title} 文件内容`} />
+            </>}
+        </div>
+      </div>
+    </section>
   )
 }
 
@@ -135,6 +298,60 @@ function TimelineRows({ events, selectedId, onSelect, compact = false }: {
   )
 }
 
+interface ConversationBlock {
+  readonly id: string
+  readonly turn?: number
+  readonly events: readonly TimelineEvent[]
+}
+
+function conversationBlocks(events: readonly TimelineEvent[]): ConversationBlock[] {
+  const groups = new Map<string, TimelineEvent[]>()
+  for (const event of events) {
+    const id = event.turn === undefined ? `category:${event.category}` : `turn:${String(event.turn)}`
+    const group = groups.get(id)
+    if (group === undefined) groups.set(id, [event])
+    else group.push(event)
+  }
+  return [...groups.entries()]
+    .map(([id, grouped]) => ({ id, turn: grouped[0]?.turn, events: grouped }))
+    .sort((left, right) => (right.events.at(-1)?.time ?? 0) - (left.events.at(-1)?.time ?? 0))
+}
+
+function ConversationBlocks({ events, selectedId, onSelect, compact = false }: {
+  events: readonly TimelineEvent[]
+  selectedId?: string
+  onSelect(event: TimelineEvent): void
+  compact?: boolean
+}) {
+  const blocks = conversationBlocks(events)
+  if (blocks.length === 0) return <div className={css.emptyState}>当前会话暂无可展示事件</div>
+  return (
+    <div className={css.conversationBlocks}>
+      {blocks.map(block => {
+        const last = block.events.at(-1)
+        return (
+          <details className={css.conversationBlock} key={block.id}>
+            <summary>
+              <span className={css.conversationBlockTitle}>
+                <span className={css.eyebrow}>{block.turn === undefined ? 'SYSTEM' : 'TURN'}</span>
+                <strong>{block.turn === undefined ? '上下文与系统事件' : `Turn ${String(block.turn)}`}</strong>
+              </span>
+              <span className={css.conversationBlockSummary}>
+                {block.events[0]?.title ?? '对话事件'}
+              </span>
+              <span className={css.conversationBlockMeta}>
+                {block.events.length} events{last === undefined ? '' : ` · ${formatTime(last.time)}`}
+              </span>
+              <ChevronRight size={15} />
+            </summary>
+            <TimelineRows events={block.events} selectedId={selectedId} onSelect={onSelect} compact={compact} />
+          </details>
+        )
+      })}
+    </div>
+  )
+}
+
 function Overview({ snapshot, selectedId, onSelect }: {
   snapshot: ObservatorySnapshot
   selectedId?: string
@@ -148,7 +365,7 @@ function Overview({ snapshot, selectedId, onSelect }: {
           <div><span className={css.eyebrow}>LIVE</span><h2>最近活动</h2></div>
           <span className={css.sectionMeta}>{snapshot.timeline.length} events</span>
         </div>
-        <TimelineRows events={snapshot.timeline.slice(-6).reverse()} selectedId={selectedId} onSelect={onSelect} compact />
+        <ConversationBlocks events={snapshot.timeline} selectedId={selectedId} onSelect={onSelect} compact />
       </section>
       <div className={css.splitSections}>
         <section className={css.band}>
@@ -173,11 +390,11 @@ function Overview({ snapshot, selectedId, onSelect }: {
         </section>
         <section className={css.band}>
           <div className={css.sectionHead}>
-            <div><span className={css.eyebrow}>RUNTIME</span><h2>插件与插槽</h2></div>
-            <span className={css.sectionMeta}>{snapshot.runtime.length} roots</span>
+            <div><span className={css.eyebrow}>能力</span><h2>已启用能力</h2></div>
+            <span className={css.sectionMeta}>{snapshot.runtime.reduce((sum, node) => sum + runtimeSize(node), 0)} 项运行组件</span>
           </div>
           {snapshot.runtime.length === 0
-            ? <div className={css.emptyState}>运行时拓扑尚未就绪</div>
+            ? <div className={css.emptyState}>暂无已启用能力信息</div>
             : <ul className={css.runtimeTree}>{snapshot.runtime.slice(0, 5).map(node => <RuntimeBranch key={node.id} node={node} />)}</ul>}
         </section>
       </div>
@@ -209,13 +426,16 @@ function TraceView({ snapshot, selectedId, onSelect }: {
           ))}
         </div>
       </div>
-      <TimelineRows events={filtered} selectedId={selectedId} onSelect={onSelect} />
+      <ConversationBlocks events={filtered} selectedId={selectedId} onSelect={onSelect} />
     </section>
   )
 }
 
 function ContextView({ snapshot }: { snapshot: ObservatorySnapshot }) {
   const total = snapshot.context.reduce((sum, item) => sum + item.estimatedTokens, 0)
+  const orderedContext = useMemo(() => [...snapshot.context].sort((left, right) => (
+    right.estimatedTokens - left.estimatedTokens || left.name.localeCompare(right.name)
+  )), [snapshot.context])
   return (
     <div className={css.viewStack}>
       <section className={css.contextSummary}>
@@ -233,7 +453,7 @@ function ContextView({ snapshot }: { snapshot: ObservatorySnapshot }) {
         </div>
         <div className={css.contextRows}>
           {snapshot.context.length === 0 && <div className={css.emptyState}>当前客户端快照未包含上下文详情</div>}
-          {snapshot.context.map(item => {
+          {orderedContext.map(item => {
             const share = total === 0 ? 0 : Math.max(2, Math.round(item.estimatedTokens / total * 100))
             return (
               <details className={css.contextRow} key={item.id}>
@@ -298,9 +518,10 @@ function downloadSnapshot(snapshot: ObservatorySnapshot): void {
   window.setTimeout(() => { URL.revokeObjectURL(href) }, 0)
 }
 
-export function ObservatoryWorkbench({ snapshot, onClose }: {
+export function ObservatoryWorkbench({ snapshot, onClose, config }: {
   snapshot: ObservatorySnapshot
   onClose?: () => void
+  config?: ConfigSource
 }) {
   const [view, setView] = useState<View>('overview')
   const [selectedId, setSelectedId] = useState<string | undefined>(() => snapshot.timeline.at(-1)?.id)
@@ -340,12 +561,20 @@ export function ObservatoryWorkbench({ snapshot, onClose }: {
             <NavItem active={view === 'trace'} icon={Activity} label="执行轨迹" count={snapshot.timeline.length} onClick={() => { changeView('trace') }} />
             <NavItem active={view === 'context'} icon={Braces} label="上下文" count={snapshot.context.length} onClick={() => { changeView('context') }} />
           </div>
+          <div className={css.navGroup}><span>管理</span>
+            <NavItem active={view === 'skills'} icon={Sparkles} label="Skills" onClick={() => { changeView('skills') }} />
+            <NavItem active={view === 'mcp'} icon={Server} label="MCP 服务" onClick={() => { changeView('mcp') }} />
+            <NavItem active={view === 'agents'} icon={Bot} label="Sub-agent" onClick={() => { changeView('agents') }} />
+          </div>
           <div className={css.navFoot}><Clock3 size={14} /><span>{formatTime(snapshot.updatedAt)} 更新</span></div>
         </nav>
         <main className={css.main}>
           {view === 'overview' && <Overview snapshot={snapshot} selectedId={selectedId} onSelect={select} />}
           {view === 'trace' && <TraceView snapshot={snapshot} selectedId={selectedId} onSelect={select} />}
           {view === 'context' && <ContextView snapshot={snapshot} />}
+          {view === 'skills' && config !== undefined && <ConfigManager config={config} kind="skills" />}
+          {view === 'mcp' && config !== undefined && <ConfigManager config={config} kind="mcp" />}
+          {view === 'agents' && config !== undefined && <ConfigManager config={config} kind="agents" />}
         </main>
         <Inspector event={selected} open={inspectorOpen} onClose={() => { setInspectorOpen(false) }} />
       </div>
@@ -353,7 +582,7 @@ export function ObservatoryWorkbench({ snapshot, onClose }: {
   )
 }
 
-export function ObservatoryPanel({ wide, useSessions, useObservatory, useRuntime }: ObservatoryPanelProps) {
+export function ObservatoryPanel({ wide, useSessions, useObservatory, useRuntime, config }: ObservatoryPanelProps) {
   const [open, setOpen] = useState(false)
   const current = useObservatory(value => value)
   const runtime = useRuntime(value => value)
@@ -380,7 +609,7 @@ export function ObservatoryPanel({ wide, useSessions, useObservatory, useRuntime
         <Activity size={wide ? 15 : 18} />
         {wide && <><span>Observatory</span><span className={css.sidebarStatus} data-status={snapshot.status} /></>}
       </button>
-      {open && <ObservatoryWorkbench snapshot={snapshot} onClose={() => { setOpen(false) }} />}
+      {open && <ObservatoryWorkbench snapshot={snapshot} config={config} onClose={() => { setOpen(false) }} />}
     </div>
   )
 }

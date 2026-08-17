@@ -1,6 +1,7 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
 import type { SessionEvent } from '@deepseek-ai/dsh-session/types'
 import { ObservatoryCollector, type ObservatoryCollectorOptions } from './core.ts'
+import { installConfigRpc } from './config-host.ts'
 import type { ObservatoryExport, ObservatorySnapshot, RawSessionEvent, RuntimeNode } from './model.ts'
 import type { RedactionOptions } from './redaction.ts'
 
@@ -48,6 +49,7 @@ export default class ObservatoryService extends Service {
   constructor(ctx: Context, options: ObservatoryCollectorOptions = {}) {
     super(ctx, 'observatory')
     this.collector = new ObservatoryCollector(options)
+    installConfigRpc(ctx)
     ctx.on('session/event', (session, event) => {
       this.collector.record(sessionIdOf(session), event as SessionEvent as RawSessionEvent)
     })
