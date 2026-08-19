@@ -1,4 +1,7 @@
-import type { ConfigFile, ConfigKind, ConfigListValue, ConfigReadValue, ConfigWriteValue } from '../config-types.ts'
+import type {
+  ConfigCreateFile, ConfigDeleteValue, ConfigFile, ConfigGenerateValue, ConfigKind, ConfigListValue,
+  ConfigReadValue, ConfigTestValue, ConfigWriteValue,
+} from '../config-types.ts'
 
 interface ClientRpcResult {
   readonly ok: boolean
@@ -41,6 +44,26 @@ function isWrite(value: unknown): value is ConfigWriteValue {
   return isConfigFile((value as Record<string, unknown>).file)
 }
 
+function isFiles(value: unknown): value is { readonly files: readonly ConfigFile[] } {
+  if (value === null || typeof value !== 'object') return false
+  const files = (value as Record<string, unknown>).files
+  return Array.isArray(files) && files.every(isConfigFile)
+}
+
+function isDelete(value: unknown): value is ConfigDeleteValue {
+  return value !== null && typeof value === 'object' && Array.isArray((value as Record<string, unknown>).deleted)
+}
+
+function isTest(value: unknown): value is ConfigTestValue {
+  return value !== null && typeof value === 'object' && typeof (value as Record<string, unknown>).ok === 'boolean'
+    && Array.isArray((value as Record<string, unknown>).checks)
+}
+
+function isGenerate(value: unknown): value is ConfigGenerateValue {
+  return value !== null && typeof value === 'object' && typeof (value as Record<string, unknown>).summary === 'string'
+    && Array.isArray((value as Record<string, unknown>).files)
+}
+
 /** 通过 Harness Host 通道读取和保存受限的 .dsh 配置文件。 */
 export class ConfigSource {
   constructor(private readonly connection: ClientConnection) {}
@@ -61,5 +84,24 @@ export class ConfigSource {
     })
     return valueOf(result, isWrite)
   }
-}
 
+  async create(kind: ConfigKind, name: string, files: readonly ConfigCreateFile[]): Promise<{ readonly files: readonly ConfigFile[] }> {
+    const result = await this.connection.rpc.call('/observatory', 'config/create', { args: { kind, name, files } })
+    return valueOf(result, isFiles)
+  }
+
+  async remove(kind: ConfigKind, id: string): Promise<ConfigDeleteValue> {
+    const result = await this.connection.rpc.call('/observatory', 'config/delete', { args: { kind, id } })
+    return valueOf(result, isDelete)
+  }
+
+  async test(kind: ConfigKind, input: { readonly id?: string; readonly files?: readonly ConfigCreateFile[]; readonly content?: string }): Promise<ConfigTestValue> {
+    const result = await this.connection.rpc.call('/observatory', 'config/test', { args: { kind, ...input } })
+    return valueOf(result, isTest)
+  }
+
+  async generate(kind: ConfigKind, prompt: string, route?: { readonly provider?: string; readonly model?: string }): Promise<ConfigGenerateValue> {
+    const result = await this.connection.rpc.call('/observatory', 'config/generate', { args: { kind, prompt, ...route } })
+    return valueOf(result, isGenerate)
+  }
+}

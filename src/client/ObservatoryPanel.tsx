@@ -4,27 +4,32 @@ import {
   AlertTriangle,
   Bot,
   Braces,
+  CheckCircle2,
   ChevronRight,
   CircleDot,
   Clock3,
   Download,
   FileText,
+  FlaskConical,
   Gauge,
   Layers3,
+  Plus,
   RefreshCw,
   Save,
   Search,
   Server,
   ShieldCheck,
   Sparkles,
+  Trash2,
+  WandSparkles,
   Wrench,
   X,
 } from 'lucide-react'
 import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
-import type { ObservatorySnapshot, RuntimeNode, TimelineEvent } from '../model.ts'
+import type { ObservatorySnapshot, RequestSummary, RuntimeNode, TimelineEvent } from '../model.ts'
 import { redactValue } from '../redaction.ts'
-import type { ConfigFile, ConfigKind, ConfigReadValue } from '../config-types.ts'
+import type { ConfigCreateFile, ConfigFile, ConfigKind, ConfigReadValue, ConfigTestValue } from '../config-types.ts'
 import { ConfigSource } from './config-source.ts'
 import { deriveClientSnapshot } from './normalize.ts'
 import type { CurrentSessionValue } from './sources.ts'
@@ -165,7 +170,16 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1_024 * 1_024)).toFixed(1)} MB`
 }
 
-function ConfigManager({ config, kind }: { config: ConfigSource; kind: ConfigKind }) {
+function templateFor(kind: ConfigKind): ConfigCreateFile[] {
+  if (kind === 'skills') return [{ relativePath: 'SKILL.md', content: '---\nname: new-skill\ndescription: 简要说明这个 Skill 的用途。\n---\n\n# 新 Skill\n\n写下 Agent 应遵循的步骤和边界。\n' }]
+  if (kind === 'mcp') return [{ relativePath: 'server.yml', content: 'transport: stdio\nserverName: new-server\ncommand: node\nargs: []\nenv: {}\ncwd: .\n' }]
+  return [
+    { relativePath: 'preset.yml', content: 'name: 新 Sub-agent\ndescription: 简要说明这个 Sub-agent 的职责。\n' },
+    { relativePath: 'agent.cordis.yml', content: "- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n    text: 你是一个专注、可靠的子 Agent。\n    complete: true\n    includeRuntimeContext: false\n" },
+  ]
+}
+
+function ConfigManager({ config, kind, request }: { config: ConfigSource; kind: ConfigKind; request?: RequestSummary }) {
   const page = CONFIG_PAGE[kind]
   const [files, setFiles] = useState<readonly ConfigFile[]>([])
   const [root, setRoot] = useState('')
@@ -178,93 +192,111 @@ function ConfigManager({ config, kind }: { config: ConfigSource; kind: ConfigKin
   const [refresh, setRefresh] = useState(0)
   const [notice, setNotice] = useState<string>()
   const [error, setError] = useState<string>()
+  const [composer, setComposer] = useState<{ mode: 'create' | 'generate'; name: string; prompt: string; files: ConfigCreateFile[] }>()
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<ConfigTestValue>()
 
   useEffect(() => {
     let active = true
-    setLoading(true)
-    setError(undefined)
+    setLoading(true); setError(undefined)
     void config.list(kind).then(value => {
       if (!active) return
-      setRoot(value.root)
-      setFiles(value.files)
-      setSelectedId(current => current !== undefined && value.files.some(file => file.id === current)
-        ? current : value.files[0]?.id)
-    }).catch(reason => {
-      if (active) setError(reason instanceof Error ? reason.message : '读取配置目录失败')
-    }).finally(() => { if (active) setLoading(false) })
+      setRoot(value.root); setFiles(value.files)
+      setSelectedId(current => current !== undefined && value.files.some(file => file.id === current) ? current : value.files[0]?.id)
+    }).catch(reason => { if (active) setError(reason instanceof Error ? reason.message : '读取配置目录失败') })
+      .finally(() => { if (active) setLoading(false) })
     return () => { active = false }
   }, [config, kind, refresh])
 
   useEffect(() => {
-    if (selectedId === undefined) {
-      setDocument(undefined)
-      setDraft('')
-      return
-    }
+    if (selectedId === undefined) { setDocument(undefined); setDraft(''); return }
     let active = true
-    setReading(true)
-    setNotice(undefined)
-    setError(undefined)
-    void config.read(kind, selectedId).then(value => {
-      if (!active) return
-      setDocument(value)
-      setDraft(value.content)
-    }).catch(reason => {
-      if (active) setError(reason instanceof Error ? reason.message : '读取配置文件失败')
-    }).finally(() => { if (active) setReading(false) })
+    setReading(true); setNotice(undefined); setError(undefined); setTestResult(undefined)
+    void config.read(kind, selectedId).then(value => { if (active) { setDocument(value); setDraft(value.content) } })
+      .catch(reason => { if (active) setError(reason instanceof Error ? reason.message : '读取配置文件失败') })
+      .finally(() => { if (active) setReading(false) })
     return () => { active = false }
   }, [config, kind, selectedId])
 
   const dirty = document !== undefined && draft !== document.content
+  const deletable = selectedId !== undefined && (kind === 'skills' ? selectedId.startsWith('skills/') : kind === 'mcp' ? selectedId.startsWith('mcp/') : selectedId.startsWith('.agent-presets/'))
   const save = () => {
     if (selectedId === undefined || document === undefined || saving) return
-    setSaving(true)
-    setNotice(undefined)
-    setError(undefined)
+    setSaving(true); setNotice(undefined); setError(undefined)
     void config.write(kind, selectedId, draft, document.file.modifiedAt).then(value => {
       setDocument(current => current === undefined ? current : { ...current, file: value.file })
-      setFiles(current => current.map(file => file.id === value.file.id ? value.file : file))
-      setNotice('已保存到本地 .dsh')
-    }).catch(reason => {
-      setError(reason instanceof Error ? reason.message : '保存失败')
-    }).finally(() => { setSaving(false) })
+      setFiles(current => current.map(file => file.id === value.file.id ? value.file : file)); setNotice('已保存到本地 .dsh')
+    }).catch(reason => { setError(reason instanceof Error ? reason.message : '保存失败') }).finally(() => { setSaving(false) })
+  }
+  const beginCreate = () => setComposer({ mode: 'create', name: `new-${kind}`, prompt: '', files: templateFor(kind) })
+  const generate = () => {
+    if (composer === undefined || composer.prompt.trim() === '') return
+    setSaving(true); setError(undefined); setNotice(undefined)
+    void config.generate(kind, composer.prompt, request).then(value => {
+      setComposer(current => current === undefined ? undefined : { ...current, files: [...value.files], name: current.name, prompt: current.prompt })
+      setNotice(value.summary)
+    }).catch(reason => { setError(reason instanceof Error ? reason.message : 'AI 生成失败') }).finally(() => { setSaving(false) })
+  }
+  const create = () => {
+    if (composer === undefined || composer.name.trim() === '' || composer.files.length === 0) return
+    setSaving(true); setError(undefined)
+    void config.create(kind, composer.name, composer.files).then(() => {
+      setComposer(undefined); setNotice('已创建配置'); setRefresh(value => value + 1)
+    }).catch(reason => { setError(reason instanceof Error ? reason.message : '创建失败') }).finally(() => { setSaving(false) })
+  }
+  const test = (input: { id?: string; content?: string; files?: readonly ConfigCreateFile[] }) => {
+    setTesting(true); setError(undefined)
+    void config.test(kind, input).then(setTestResult).catch(reason => { setError(reason instanceof Error ? reason.message : '测试失败') }).finally(() => { setTesting(false) })
+  }
+  const remove = () => {
+    if (selectedId === undefined || !window.confirm(`确认删除组件 ${selectedId.split('/')[1] ?? selectedId} 吗？`)) return
+    setSaving(true); setError(undefined)
+    void config.remove(kind, selectedId).then(() => { setNotice('已删除组件'); setSelectedId(undefined); setRefresh(value => value + 1) })
+      .catch(reason => { setError(reason instanceof Error ? reason.message : '删除失败') }).finally(() => { setSaving(false) })
   }
 
-  return (
-    <section className={`${css.band} ${css.configPage}`}>
-      <div className={css.configHeader}>
-        <div><span className={css.eyebrow}>{page.eyebrow}</span><h2>{page.title}</h2><p>{page.description}</p></div>
-        <div className={css.configActions}>
-          <span className={css.configRoot}>{root || '.dsh'}</span>
-          <button type="button" className={css.iconButton} aria-label="刷新文件列表" title="刷新文件列表" onClick={() => { setRefresh(value => value + 1) }}><RefreshCw size={15} /></button>
-          <button type="button" className={css.saveButton} disabled={!dirty || saving || reading} onClick={save}><Save size={14} />{saving ? '保存中' : '保存修改'}</button>
-        </div>
+  return <section className={`${css.band} ${css.configPage}`}>
+    <div className={css.configHeader}>
+      <div><span className={css.eyebrow}>{page.eyebrow}</span><h2>{page.title}</h2><p>{page.description}</p></div>
+      <div className={css.configActions}>
+        <span className={css.configRoot}>{root || '.dsh'}</span>
+        <button type="button" className={css.iconButton} aria-label="刷新文件列表" title="刷新文件列表" onClick={() => { setRefresh(value => value + 1) }}><RefreshCw size={15} /></button>
+        <button type="button" className={css.toolbarButton} onClick={beginCreate}><Plus size={14} />新建</button>
+        <button type="button" className={css.toolbarButton} onClick={() => setComposer({ mode: 'generate', name: `generated-${kind}`, prompt: '', files: [] })}><WandSparkles size={14} />AI 生成</button>
+        <button type="button" className={css.saveButton} disabled={!dirty || saving || reading} onClick={save}><Save size={14} />{saving ? '保存中' : '保存修改'}</button>
       </div>
-      {error !== undefined && <div className={css.configNotice} data-tone="error">{error}</div>}
-      {notice !== undefined && <div className={css.configNotice} data-tone="success">{notice}</div>}
-      <div className={css.configLayout}>
-        <div className={css.configFiles}>
-          <div className={css.configFilesHead}><span>文件</span><span>{files.length}</span></div>
-          {loading && <div className={css.configEmpty}>正在读取…</div>}
-          {!loading && files.length === 0 && <div className={css.configEmpty}>目录中暂无文件</div>}
-          {files.map(file => (
-            <button type="button" key={file.id} className={file.id === selectedId ? `${css.configFile} ${css.configFileActive}` : css.configFile} onClick={() => { setSelectedId(file.id) }}>
-              <FileText size={14} />
-              <span><strong>{file.relativePath.split('/').at(-1)}</strong><small>{formatBytes(file.bytes)} · {file.format}</small></span>
-            </button>
-          ))}
-        </div>
-        <div className={css.configEditor}>
-          {selectedId === undefined
-            ? <div className={css.configEmpty}><FileText size={20} /><span>选择一个文件开始查看</span></div>
-            : <>
-              <div className={css.configEditorHead}><strong>{selectedId}</strong>{document?.redacted === true && <span>已隐藏敏感值</span>}</div>
-              <textarea value={draft} disabled={reading || saving} onChange={event => { setDraft(event.target.value) }} spellCheck={false} aria-label={`${page.title} 文件内容`} />
-            </>}
-        </div>
+    </div>
+    {error !== undefined && <div className={css.configNotice} data-tone="error">{error}</div>}
+    {notice !== undefined && <div className={css.configNotice} data-tone="success">{notice}</div>}
+    {composer !== undefined && <div className={css.configComposer}>
+      <div className={css.configComposerHead}><strong>{composer.mode === 'generate' ? '一句话生成配置' : '新建配置'}</strong><button type="button" className={css.iconButton} aria-label="关闭编辑" onClick={() => { setComposer(undefined) }}><X size={15} /></button></div>
+      <label>名称<input value={composer.name} onChange={event => { setComposer(current => current && { ...current, name: event.target.value }) }} /></label>
+      {composer.mode === 'generate' && <label>描述需求<textarea value={composer.prompt} onChange={event => { setComposer(current => current && { ...current, prompt: event.target.value }) }} placeholder="例如：创建一个审查 API 安全问题的 Skill" /></label>}
+      <div className={css.configComposerActions}>
+        {composer.mode === 'generate' && <button type="button" className={css.toolbarButton} disabled={saving || composer.prompt.trim() === ''} onClick={generate}><WandSparkles size={14} />{saving ? '生成中' : '生成草稿'}</button>}
+        {composer.files.length > 0 && <button type="button" className={css.toolbarButton} disabled={testing} onClick={() => { test({ files: composer.files }) }}><FlaskConical size={14} />{testing ? '测试中' : '测试草稿'}</button>}
+        {composer.files.length > 0 && <button type="button" className={css.saveButton} disabled={saving} onClick={create}><CheckCircle2 size={14} />创建到本地</button>}
       </div>
-    </section>
-  )
+      {composer.files.map((file, index) => <label key={`${file.relativePath}-${index}`}>文件 {index + 1}<input value={file.relativePath} onChange={event => { setComposer(current => current && { ...current, files: current.files.map((item, itemIndex) => itemIndex === index ? { ...item, relativePath: event.target.value } : item) }) }} /><textarea value={file.content} onChange={event => { setComposer(current => current && { ...current, files: current.files.map((item, itemIndex) => itemIndex === index ? { ...item, content: event.target.value } : item) }) }} /></label>)}
+      {testResult !== undefined && <TestResult result={testResult} />}
+    </div>}
+    <div className={css.configLayout}>
+      <div className={css.configFiles}>
+        <div className={css.configFilesHead}><span>文件</span><span>{files.length}</span></div>
+        {loading && <div className={css.configEmpty}>正在读取…</div>}
+        {!loading && files.length === 0 && <div className={css.configEmpty}>目录中暂无文件</div>}
+        {files.map(file => <button type="button" key={file.id} className={file.id === selectedId ? `${css.configFile} ${css.configFileActive}` : css.configFile} onClick={() => { setSelectedId(file.id) }}><FileText size={14} /><span><strong>{file.relativePath.split('/').at(-1)}</strong><small>{formatBytes(file.bytes)} · {file.format}</small></span></button>)}
+      </div>
+      <div className={css.configEditor}>
+        {selectedId === undefined ? <div className={css.configEmpty}><FileText size={20} /><span>选择一个文件开始查看</span></div> : <><div className={css.configEditorHead}><strong>{selectedId}</strong><div><button type="button" className={css.iconButton} disabled={testing} aria-label="测试当前配置" title="测试当前配置" onClick={() => { test({ id: selectedId }) }}><FlaskConical size={14} /></button>{deletable && <button type="button" className={css.iconButton} aria-label="删除当前组件" title="删除当前组件" onClick={remove}><Trash2 size={14} /></button>}{document?.redacted === true && <span>已隐藏敏感值</span>}</div></div><textarea value={draft} disabled={reading || saving} onChange={event => { setDraft(event.target.value) }} spellCheck={false} aria-label={`${page.title} 文件内容`} /></>}
+      </div>
+    </div>
+    {testResult !== undefined && composer === undefined && <TestResult result={testResult} />}
+  </section>
+}
+
+function TestResult({ result }: { result: ConfigTestValue }) {
+  return <div className={css.testResult} data-tone={result.ok ? 'success' : 'error'}><strong>{result.ok ? '测试通过' : '需要修正'}</strong>{result.checks.map((check, index) => <span key={`${check.label}-${index}`}><span>{check.ok ? '✓' : '×'}</span>{check.label}：{check.detail}</span>)}</div>
 }
 
 function TimelineRows({ events, selectedId, onSelect, compact = false }: {
@@ -572,9 +604,9 @@ export function ObservatoryWorkbench({ snapshot, onClose, config }: {
           {view === 'overview' && <Overview snapshot={snapshot} selectedId={selectedId} onSelect={select} />}
           {view === 'trace' && <TraceView snapshot={snapshot} selectedId={selectedId} onSelect={select} />}
           {view === 'context' && <ContextView snapshot={snapshot} />}
-          {view === 'skills' && config !== undefined && <ConfigManager config={config} kind="skills" />}
-          {view === 'mcp' && config !== undefined && <ConfigManager config={config} kind="mcp" />}
-          {view === 'agents' && config !== undefined && <ConfigManager config={config} kind="agents" />}
+          {view === 'skills' && config !== undefined && <ConfigManager config={config} kind="skills" request={snapshot.request} />}
+          {view === 'mcp' && config !== undefined && <ConfigManager config={config} kind="mcp" request={snapshot.request} />}
+          {view === 'agents' && config !== undefined && <ConfigManager config={config} kind="agents" request={snapshot.request} />}
         </main>
         <Inspector event={selected} open={inspectorOpen} onClose={() => { setInspectorOpen(false) }} />
       </div>
