@@ -418,6 +418,9 @@ td[data-danger] { color: var(--obs-red); }
 .configRoot { color: var(--obs-faint); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
 .saveButton { height: 32px; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border: 1px solid var(--obs-accent); border-radius: 5px; color: #fff; background: var(--obs-accent); cursor: pointer; font: inherit; font-size: 11px; }
 .saveButton:disabled { border-color: var(--obs-border); color: var(--obs-faint); background: var(--obs-surface-2); cursor: default; }
+.toolbarButton { height: 32px; display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; border: 1px solid var(--obs-border); border-radius: 5px; color: var(--obs-text); background: var(--obs-surface); cursor: pointer; font: inherit; font-size: 11px; }
+.toolbarButton:hover { border-color: var(--obs-accent); color: var(--obs-accent); }
+.toolbarButton:disabled { color: var(--obs-faint); background: var(--obs-surface-2); cursor: default; }
 .configNotice { margin: 12px 0 0; padding: 8px 10px; border: 1px solid var(--obs-border); border-radius: 5px; color: var(--obs-muted); font-size: 11px; }
 .configNotice[data-tone='error'] { color: var(--obs-red); border-color: color-mix(in srgb, var(--obs-red) 35%, var(--obs-border)); }
 .configNotice[data-tone='success'] { color: var(--obs-green); border-color: color-mix(in srgb, var(--obs-green) 35%, var(--obs-border)); }
@@ -438,6 +441,18 @@ td[data-danger] { color: var(--obs-red); }
 .configEditorHead span { color: var(--obs-amber); font: 9px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; white-space: nowrap; }
 .configEditor textarea { width: 100%; min-height: 380px; flex: 1; resize: vertical; padding: 13px; border: 0; outline: 0; color: var(--obs-text); background: var(--obs-surface); font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 2; }
 .configEditor textarea:disabled { opacity: .65; }
+.configComposer { display: grid; gap: 10px; margin-top: 14px; padding: 14px; border: 1px solid var(--obs-border-strong); border-radius: 6px; background: var(--obs-surface); }
+.configComposerHead { display: flex; align-items: center; justify-content: space-between; color: var(--obs-text); font-size: 12px; }
+.configComposer label { display: grid; gap: 5px; color: var(--obs-faint); font-size: 10px; }
+.configComposer input, .configComposer textarea { width: 100%; box-sizing: border-box; padding: 8px 9px; border: 1px solid var(--obs-border); border-radius: 4px; outline: 0; color: var(--obs-text); background: var(--obs-bg); font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.configComposer textarea { min-height: 110px; resize: vertical; }
+.configComposerActions { display: flex; flex-wrap: wrap; gap: 7px; justify-content: flex-end; }
+.testResult { display: grid; gap: 5px; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--obs-border); border-radius: 5px; color: var(--obs-muted); font-size: 10px; background: var(--obs-surface); }
+.testResult > strong { color: var(--obs-green); font-size: 11px; }
+.testResult[data-tone='error'] > strong { color: var(--obs-red); }
+.testResult > span { display: block; }
+.testResult > span > span { display: inline-block; width: 15px; color: var(--obs-green); font-weight: 700; }
+.testResult[data-tone='error'] > span > span { color: var(--obs-red); }
 .configEmpty { min-height: 110px; display: grid; place-content: center; justify-items: center; gap: 7px; color: var(--obs-faint); font-size: 11px; }
 .configEditor > .configEmpty { height: 100%; }
 
